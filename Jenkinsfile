@@ -1,66 +1,105 @@
 pipeline {
     agent any
-    tools {
-        maven 'maven'
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['build', 'deploy', 'remove'],
+            description: 'Choose pipeline action'
+        )
+        string(
+            name: 'IMAGE_NAME',
+            defaultValue: 'spring_project2003',
+            description: 'Docker image name'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'v1',
+            description: 'Docker image tag'
+        )
+        string(
+            name: 'DOCKERHUB_USERNAME',
+            defaultValue: 'karthikan123',
+            description: 'DockerHub username'
+        )
     }
 
     environment {
-        IMAGE_NAME = 'spring-app'
-        CONTAINER_NAME = 'spring-app-container'
-        APP_PORT = '8083'
+        IMAGE = "${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
     }
 
     stages {
-        stage('Build JAR') {
+
+        /* ================= CHECKOUT ================= */
+        stage('Checkout Code') {
+            when { expression { params.ACTION == 'build' } }
             steps {
-                sh 'mvn clean package -DskipTests'
+                git branch: 'master',
+                    url: 'https://github.com/Ankarthik0011/SpringBoot_Project_deploy_using_Jenkins_Automation.git',
+                    credentialsId: 'github-creds'
             }
         }
 
+        /* ================= BUILD ================= */
         stage('Build Docker Image') {
+            when { expression { params.ACTION == 'build' } }
             steps {
-                sh "docker build -t ${IMAGE_NAME} ."
+                sh 'docker build -t $IMAGE .'
             }
         }
 
-        stage('Run Docker Container If Not Running') {
+        stage('Docker Login') {
+            when { expression { params.ACTION == 'build' } }
             steps {
-                script {
-                    def isRunning = sh(script: "docker ps -q -f name=${CONTAINER_NAME}", returnStdout: true).trim()
-
-                    if (isRunning) {
-                        echo "🚫 Container '${CONTAINER_NAME}' is already running. Skipping run."
-                    } else {
-                        def exists = sh(script: "docker ps -a -q -f name=${CONTAINER_NAME}", returnStdout: true).trim()
-                        if (exists) {
-                            echo "🔁 Container exists but not running. Removing it..."
-                            sh "docker rm ${CONTAINER_NAME}"
-                        }
-
-                        echo "🚀 Starting new Docker container..."
-                        sh "docker run -d --name ${CONTAINER_NAME} -p ${APP_PORT}:8080 ${IMAGE_NAME}"
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-3153',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
                 }
             }
         }
 
-        stage('Show Container Status') {
+        stage('Docker Push') {
+            when { expression { params.ACTION == 'build' } }
             steps {
-                echo "📦 Current Docker containers:"
-                sh "docker ps -a --filter name=${CONTAINER_NAME}"
+                sh 'docker push $IMAGE'
+            }
+        }
+
+        stage('Delete Local Image') {
+            when { expression { params.ACTION == 'build' } }
+            steps {
+                sh 'docker rmi $IMAGE || true'
+            }
+        }
+
+        /* ================= DEPLOY ================= */
+        stage('Deploy') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                sh '''
+                docker-compose down || true
+                docker-compose pull
+                docker-compose up -d
+                '''
+            }
+        }
+
+        /* ================= REMOVE ================= */
+        stage('Remove') {
+            when { expression { params.ACTION == 'remove' } }
+            steps {
+                sh 'docker-compose down || true'
             }
         }
     }
 
     post {
-        success {
-            echo "✅ Spring Boot container is handled successfully."
-        }
-        failure {
-            echo "❌ Something went wrong with the deployment."
-        }
         always {
-            echo "ℹ️ Pipeline finished. Check logs above for final status."
+            sh 'docker logout || true'
+            echo "Pipeline execution completed successfully"
         }
     }
 }
